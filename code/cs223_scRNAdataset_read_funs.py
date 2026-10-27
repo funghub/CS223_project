@@ -98,13 +98,14 @@ if __name__ == "__main__":
     # print("Writing to .json")
     # adatadf.to_json('./output/broad/broad1.json', orient='index')
 
-    print("Printing adatadf.")
-    print(adatadf)
-    print()
-    print(">>>>>>>>>>>>>>><<<<<<<<<<<<<<<<")
-    print()
+    
 
     # I believe we do not run this right? we dont have/need pbmc_sample for our project
+    # print("Printing adatadf.")
+    # print(adatadf)
+    # print()
+    # print(">>>>>>>>>>>>>>><<<<<<<<<<<<<<<<")
+    # print()
     # adata1 = load_h5ad_dataset("./output/pbmc_sample.h5ad")
     # print(adata1)
     # print("Comveting adata1 to DataFrame")
