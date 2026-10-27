@@ -1,6 +1,5 @@
 #!/bin/bash
 #SBATCH --job-name=cs223_convert_h5ad_himem_128gb
-#SBATCH --mail-user=lawrence.fung@sjsu.edu --mail-type=END,FAIL
 ##SBATCH --partition=nodes       # (Use your cluster's specific high-mem partition name if required)
 #SBATCH --partition=himem      # (Use your cluster's specific high-mem partition name if required)
 #SBATCH --nodelist=himem01     # Optional: target a specific himem node, or let Slurm pick
