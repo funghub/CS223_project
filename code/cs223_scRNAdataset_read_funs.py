@@ -24,7 +24,8 @@ def load_broad_dataset(data_dir):
     """
     matrix_path = os.path.join(data_dir, 'matrix.mtx')
     barcodes_path = os.path.join(data_dir, 'barcodes.tsv')
-    genes_path = os.path.join(data_dir, 'meta.tsv') # WAS genes.tsv
+    genes_path = os.path.join(data_dir, 'features.tsv') # WAS genes.tsv
+    metadata_path = os.path.join(data_dir, 'meta.tsv')  # Cell-level metadata
 
     if not os.path.exists(genes_path):
         genes_path = os.path.join(data_dir, 'features.tsv')
@@ -37,6 +38,7 @@ def load_broad_dataset(data_dir):
 
     print("Step 2: Loading cell and gene metadata...")
     barcodes = pd.read_csv(barcodes_path, header=None, sep='\t', names=['barcode'])
+    # features.tsv is a 1-column file of gene symbols
     genes = pd.read_csv(genes_path, header=None, sep='\t')
 
     if genes.shape[1] >= 2:
