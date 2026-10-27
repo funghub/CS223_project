@@ -84,10 +84,11 @@ if __name__ == "__main__":
     adata.write_h5ad("./output/broad/broad1.h5ad")
     
 
-    print("Conveting adata to DataFrame")
-    adatadf = adata.to_df()
+
 
     # don't do this not necessary
+    # print("Conveting adata to DataFrame")
+    # adatadf = adata.to_df() # will OOM error
     # print("Writing converted DataFrame to ./output/broad/broad1.csv,  ./output/broad/broad1.excel, and ./output/broad/broad1.json")
     # print("This can take several minutes to write each file")
     # print("Writing to .csv")
