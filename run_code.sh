@@ -5,6 +5,8 @@
 #SBATCH --ntasks-per-node=1
 #SBATCH --time=1:00:00
 #SBATCH --mem-per-cpu=8000
+#SBATCH --output=./output/slurm_project_%j.out
+#SBATCH --error=./output/slurm_project_%j.err
 
   
 # module load conda/conda
@@ -17,6 +19,8 @@ echo "start time: $start" # Print the timestamp in seconds
 
 echo "hostname: $HOSTNAME"
 
+mkdir -p output # this is where output and error go
+
 
 # automatically detects where Conda is installed without needing a hardcoded source path
 eval "$(conda shell.bash hook)"
@@ -25,7 +29,7 @@ conda activate cs223_class
 
 
 ###########################
-
+echo "$(pwd)"
 
 python3 ./code/cs223_scRNAdataset_read_funs.py
 
@@ -43,7 +47,9 @@ runtime=$((end - start))
 echo "run time: $runtime" # print the run time
 
 # run UNIX command hostname on the node, print it in output
-srun hostname
+# srun hostname
+hostname
 
 # wait for 60 secs then exit job step
-srun sleep 60
+# srun sleep 60
+sleep 60
