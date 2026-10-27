@@ -77,8 +77,13 @@ if __name__ == "__main__":
     print("Reading Broad Institute single-cell data...")
     adata = load_broad_dataset("./data/All Cells/")
     print("adata", adata)
+    
     print("Writing adata object to ./output/broad/broad1.h5ad")
+    # Ensure the output directory exists before writing
+    os.makedirs("./output/broad", exist_ok=True)
     adata.write_h5ad("./output/broad/broad1.h5ad")
+    
+
     print("Conveting adata to DataFrame")
     adatadf = adata.to_df()
 
