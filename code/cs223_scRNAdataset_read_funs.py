@@ -24,7 +24,7 @@ def load_broad_dataset(data_dir):
     """
     matrix_path = os.path.join(data_dir, 'matrix.mtx')
     barcodes_path = os.path.join(data_dir, 'barcodes.tsv')
-    genes_path = os.path.join(data_dir, 'genes.tsv')
+    genes_path = os.path.join(data_dir, 'meta.tsv') # WAS genes.tsv
 
     if not os.path.exists(genes_path):
         genes_path = os.path.join(data_dir, 'features.tsv')
@@ -73,32 +73,33 @@ def load_h5ad_dataset(data_dir):
 ### MAKE SURE MODULE IS IMPORTED
 if __name__ == "__main__":
     print("Reading Broad Institute single-cell data...")
-    adata = load_broad_dataset("./data/broad/")
+    adata = load_broad_dataset("./data/All Cells/")
     print("adata", adata)
-    print("Writing adata object to ./data/broad/broad1.h5ad")
-    adata.write_h5ad("./data/broad/broad1.h5ad")
+    print("Writing adata object to ./output/broad/broad1.h5ad")
+    adata.write_h5ad("./output/broad/broad1.h5ad")
     print("Conveting adata to DataFrame")
     adatadf = adata.to_df()
-    print("Writing converted DataFrame to ./data/broad/broad1.csv,  ./data/broad/broad1.excel, and ./data/broad/broad1.json")
+    print("Writing converted DataFrame to ./output/broad/broad1.csv,  ./output/broad/broad1.excel, and ./output/broad/broad1.json")
     print("This can take several minutes to write each file")
     print("Writing to .csv")
-    #adatadf.to_csv('./data/broad/broad1.csv', index=False)
+    adatadf.to_csv('./output/broad/broad1.csv', index=False)
     print("Writing to .excel")
-    #adatadf.to_excel('./data/broad/broad1.excel', index=False)
+    adatadf.to_excel('./output/broad/broad1.excel', index=False)
     print("Writing to .json")
-    #adatadf.to_json('./data/broad/broad1.json', orient='index')
+    adatadf.to_json('./output/broad/broad1.json', orient='index')
     print("Printing adatadf.")
     print(adatadf)
     print()
     print(">>>>>>>>>>>>>>><<<<<<<<<<<<<<<<")
     print()
 
-    adata1 = load_h5ad_dataset("./data/pbmc_sample.h5ad")
-    print(adata1)
-    print("Comveting adata1 to DataFrame")
-    adatadf1 = adata1.to_df()
-    print(adatadf1)
-    print()
+    # I believe we do not run this right? we dont have/need pbmc_sample for our project
+    # adata1 = load_h5ad_dataset("./output/pbmc_sample.h5ad")
+    # print(adata1)
+    # print("Comveting adata1 to DataFrame")
+    # adatadf1 = adata1.to_df()
+    # print(adatadf1)
+    # print()
     print(">>>>> DONE <<<<<")
     #print("Module cs223_scRNAdataset_read_funs.py is intended to be imported and not executed.")
 
