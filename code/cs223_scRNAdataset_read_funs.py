@@ -77,10 +77,10 @@ def process_and_save():
     adata = load_broad_dataset("./data/All Cells/")
     print("adata", adata)
     
-    print("Writing adata object to ./output/broad/broad1.h5ad")
+    print("Writing adata object to ./output/broad1.h5ad")
     # Ensure the output directory exists before writing
-    os.makedirs("./output/broad", exist_ok=True)
-    adata.write_h5ad("./output/broad/broad1.h5ad")
+    os.makedirs("./output", exist_ok=True)
+    adata.write_h5ad("./output/broad1.h5ad")
 
 
 '''
@@ -97,14 +97,14 @@ if __name__ == "__main__":
     # don't do this not necessary
     # print("Conveting adata to DataFrame")
     # adatadf = adata.to_df() # will OOM error
-    # print("Writing converted DataFrame to ./output/broad/broad1.csv,  ./output/broad/broad1.excel, and ./output/broad/broad1.json")
+    # print("Writing converted DataFrame to ./output/broad1.csv,  ./output/broad1.excel, and ./output/broad1.json")
     # print("This can take several minutes to write each file")
     # print("Writing to .csv")
-    # adatadf.to_csv('./output/broad/broad1.csv', index=False)
+    # adatadf.to_csv('./output/broad1.csv', index=False)
     # print("Writing to .excel")
-    # adatadf.to_excel('./output/broad/broad1.excel', index=False)
+    # adatadf.to_excel('./output/broad1.excel', index=False)
     # print("Writing to .json")
-    # adatadf.to_json('./output/broad/broad1.json', orient='index')
+    # adatadf.to_json('./output/broad1.json', orient='index')
 
     # I believe we do not run this right? we dont have/need pbmc_sample for our project
     # print("Printing adatadf.")
