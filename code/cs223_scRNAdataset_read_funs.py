@@ -1,3 +1,4 @@
+# coding: utf-8 # <- This is an encoding declaration
 #NAME: cs223_scRNAdataset_read_funs.py
 
 # IMPORTS
@@ -19,6 +20,7 @@ and
 # information about the dataset.
 ###
 def load_broad_dataset(data_dir):
+# LF, 30%: edited and debugged the function provided from class to fit the current dataset
     """
     Reads uncompressed Broad Institute single-cell data into an AnnData object.
     """
@@ -61,19 +63,16 @@ def load_broad_dataset(data_dir):
     return adata
 
 
-###
 # Reading .h5ad scRNA type files.
-###
 def load_h5ad_dataset(data_dir):
     # Read the file into an AnnData object
     adata = ad.read_h5ad(data_dir)
     return adata
 
-
-
-
-### MAKE SURE MODULE IS IMPORTED
-if __name__ == "__main__":
+# YOU can call this function in the main.py if importing this module
+# import cs223_scRNAdataset_read_funs as read_funs
+def process_and_save():
+# LF, 40%: create this function to run for importing module
     print("Reading Broad Institute single-cell data...")
     adata = load_broad_dataset("./data/All Cells/")
     print("adata", adata)
@@ -82,9 +81,18 @@ if __name__ == "__main__":
     # Ensure the output directory exists before writing
     os.makedirs("./output/broad", exist_ok=True)
     adata.write_h5ad("./output/broad/broad1.h5ad")
-    
 
 
+'''
+The intention of this code is to be imported into the main module 
+of the final project pipeline in the future
+'''
+### MAKE SURE MODULE IS IMPORTED
+if __name__ == "__main__":
+    # When running this file directly, call the function automatically
+    process_and_save()
+    print("<module name> : Is intended to be imported and not executed.")
+    print(">>>>> DONE <<<<<")
 
     # don't do this not necessary
     # print("Conveting adata to DataFrame")
@@ -97,8 +105,6 @@ if __name__ == "__main__":
     # adatadf.to_excel('./output/broad/broad1.excel', index=False)
     # print("Writing to .json")
     # adatadf.to_json('./output/broad/broad1.json', orient='index')
-
-    
 
     # I believe we do not run this right? we dont have/need pbmc_sample for our project
     # print("Printing adatadf.")
@@ -114,9 +120,4 @@ if __name__ == "__main__":
     # print()
     print(">>>>> DONE <<<<<")
     #print("Module cs223_scRNAdataset_read_funs.py is intended to be imported and not executed.")
-
-
-
-
-
 
