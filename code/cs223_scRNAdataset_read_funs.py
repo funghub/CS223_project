@@ -39,9 +39,12 @@ def load_broad_dataset(data_dir):
     X = X_sparse.tocsr().T
 
     print("Step 2: Loading cell and gene metadata...")
-    barcodes = pd.read_csv(barcodes_path, header=None, sep='\t', names=['barcode'])
+    barcodes = pd.read_csv(barcodes_path, header=None, sep='\t', names=['barcode'], dtype=str)
     # features.tsv is a 1-column file of gene symbols
     genes = pd.read_csv(genes_path, header=None, sep='\t')
+    metadata = pd.read_csv(metadata_path, sep='\t', index_col='cellId', low_memory=False)
+    for column in metadata.select_dtypes(include='object'):
+        metadata[column] = metadata[column].fillna('')
 
     if genes.shape[1] >= 2:
         genes.columns = ['gene_ids', 'gene_symbols']
@@ -50,6 +53,8 @@ def load_broad_dataset(data_dir):
 
     # Step 3: Align dimensions and set indices
     barcodes.index = barcodes['barcode'].astype(str)
+
+    barcodes = barcodes.join(metadata, how='left')
 
     if 'gene_symbols' in genes.columns:
         genes.index = genes['gene_symbols'].astype(str)
