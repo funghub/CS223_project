@@ -183,7 +183,10 @@ def _generate_and_execute(file_path: str, output_file_path: str, log_dir, logger
          (one before and one after Harmony if feasible, otherwise after only)
        - Dotplot of the marker genes grouped by cell_type
     11. Output: Save the final AnnData to "{OUTPUT_NAME}" in "{output_file_path}" (exact filename).
-        Do not overwrite the input file.
+    Do not overwrite the input file. Write with compression="gzip" (or "lzf" for faster writes).
+    Before saving, set adata.X to the sparse log-normalized matrix from adata.raw (subset to the HVGs) 
+    (such as: adata.X = adata.raw[:, adata.var_names].X.tocsr().astype(np.float32))
+    instead of the dense scaled matrix, and cast obsp["distances"] and obsp["connectivities"] to float32.
 
     Computer limit:
     64 GB RAM, 4 CPUs. Use in-memory Scanpy while minimizing peak memory including temporary copies.
