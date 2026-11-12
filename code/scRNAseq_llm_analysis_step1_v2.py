@@ -4,20 +4,15 @@ Pipeline requested from Claude: QC + mito filter, Scrublet doublet removal,
 normalization, HVG, PCA, Harmony integration (patient/platform), neighbors,
 UMAP, Leiden, marker-based cell type annotation, figures, save .h5ad.
 
-Each run writes generation and analysis logs under output/logs/<run-id>.
+Progress and errors are displayed directly in the terminal.
 """
 
 import gc
-import json
-import logging
 import os
 from pathlib import Path
 import re
 import subprocess
 import sys
-import time
-from datetime import datetime
-from uuid import uuid4
 
 import anndata as ad
 from anthropic import Anthropic
@@ -31,68 +26,10 @@ GENERATED_SCRIPT = PROJECT_ROOT / "generated" / "cs223_llm_step1_scanpy_analysis
 
 
 def analyze_scrna_with_claude(file_path: str, output_file_path: str):
-    output_dir = (PROJECT_ROOT / output_file_path).resolve()
-    run_id = datetime.now().strftime("%Y%m%d_%H%M%S") + "_" + uuid4().hex[:8]
-    log_dir = output_dir / "logs" / run_id
-    log_dir.mkdir(parents=True)
-    logger = logging.getLogger(f"scrna_generation_test.{run_id}")
-    logger.setLevel(logging.INFO)
-    logger.propagate = False
-    formatter = logging.Formatter("%(asctime)s %(levelname)s %(message)s")
-    file_handler = logging.FileHandler(log_dir / "generation.log", encoding="utf-8")
-    console_handler = logging.StreamHandler(sys.stdout)
-    for handler in (file_handler, console_handler):
-        handler.setFormatter(formatter)
-        logger.addHandler(handler)
-    try:
-        logger.info("Run logs: %s", log_dir)
-        return _generate_and_execute(file_path, output_file_path, log_dir, logger)
-    except BaseException:
-        logger.exception("Generation or execution failed. See this traceback and analysis.log if present.")
-        raise
-    finally:
-        for handler in (file_handler, console_handler):
-            logger.removeHandler(handler)
-            handler.close()
-
-
-def execute_with_log(script_path, log_path, logger):
-    """Tee child stdout/stderr to disk and the terminal; no retries or watchdog."""
-    environment = os.environ.copy()
-    environment["PYTHONIOENCODING"] = "utf-8"
-    environment["MPLBACKEND"] = "Agg"  # no display on the cluster
-    started = time.monotonic()
-    with log_path.open("w", encoding="utf-8") as log:
-        child = subprocess.Popen(
-            [sys.executable, "-u", str(script_path)], cwd=PROJECT_ROOT,
-            stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-            text=True, encoding="utf-8", errors="replace", bufsize=1,
-            env=environment,
-        )
-        logger.info("Analysis started, PID %s. Combined stdout/stderr: %s", child.pid, log_path)
-        try:
-            for line in child.stdout:
-                log.write(line)
-                log.flush()
-                print(line, end="", flush=True)
-            returncode = child.wait()
-        except BaseException:
-            if child.poll() is None:
-                child.kill()
-            child.wait()
-            raise
-        finally:
-            child.stdout.close()
-    seconds = round(time.monotonic() - started, 2)
-    logger.info("Analysis exited with return code %s after %.2f seconds", returncode, seconds)
-    return returncode, seconds
-
-
-def _generate_and_execute(file_path: str, output_file_path: str, log_dir, logger):
     file_path = (PROJECT_ROOT / file_path).resolve().as_posix()
     output_dir = (PROJECT_ROOT / output_file_path).resolve()
     output_file_path = output_dir.as_posix()
-    logger.info("Reading disk-backed dataset metadata: %s", file_path)
+    print(f"Reading disk-backed dataset metadata: {file_path}", flush=True)
     adata = ad.read_h5ad(file_path, backed="r")
     try:
         num_cells = adata.n_obs
@@ -124,8 +61,8 @@ def _generate_and_execute(file_path: str, output_file_path: str, log_dir, logger
         adata.file.close()
     del adata
     gc.collect()
-    logger.info("Dataset metadata: %s cells x %s genes", num_cells, num_genes)
-    logger.info("Batch column candidates: %s", batch_context)
+    print(f"Dataset metadata: {num_cells} cells x {num_genes} genes", flush=True)
+    print(f"Batch column candidates: {batch_context}", flush=True)
 
     prompt = f"""
     Act as an expert bioinformatician and Python developer specializing in single-cell RNA sequencing (scRNA-seq) analysis.
@@ -189,7 +126,7 @@ def _generate_and_execute(file_path: str, output_file_path: str, log_dir, logger
     instead of the dense scaled matrix, and cast obsp["distances"] and obsp["connectivities"] to float32.
 
     Computer limit:
-    64 GB RAM, 4 CPUs. Use in-memory Scanpy while minimizing peak memory including temporary copies.
+    32 GB RAM. Use in-memory Scanpy while minimizing peak memory including temporary copies.
     Keep the sparse format and use float32. Do not duplicate the full counts matrix in a layer.
     Subset to HVGs before attaching all-gene log-normalized expression as adata.raw (set raw before scaling),
     so downstream differential expression can use unscaled data. Free objects with del and gc.collect().
@@ -200,7 +137,7 @@ def _generate_and_execute(file_path: str, output_file_path: str, log_dir, logger
     """
 
     max_tokens = 16000
-    logger.info("Sending dataset context to Claude: model=claude-sonnet-5-5, max_tokens=%s, effort=medium", max_tokens)
+    print(f"Sending dataset context to Claude: model=claude-sonnet-5-5, max_tokens={max_tokens}, effort=medium", flush=True)
     client = Anthropic(api_key=os.environ["ANTHROPIC_API_KEY"])
     response = client.messages.create(
         model="claude-sonnet-5-5",
@@ -209,48 +146,40 @@ def _generate_and_execute(file_path: str, output_file_path: str, log_dir, logger
         cache_control={"type": "ephemeral"},
         messages=[{"role": "user", "content": prompt}],
     )
-    usage = response.usage.model_dump()
-    (log_dir / "usage.json").write_text(json.dumps(usage, indent=2), encoding="utf-8")
-    logger.info("Claude stop reason: %s; cache written: %s; cache reused: %s; output tokens: %s",
-                response.stop_reason, response.usage.cache_creation_input_tokens,
-                response.usage.cache_read_input_tokens, response.usage.output_tokens)
-
     text_block = next((block for block in response.content if block.type == "text"), None)
     analysis_strategy = text_block.text if text_block else "No text response generated"
-    (log_dir / "response.txt").write_text(analysis_strategy, encoding="utf-8")
 
     if response.stop_reason == "max_tokens":
         raise RuntimeError(
             "Claude reached max_tokens. Increase the response token limit before "
-            f"retrying. Partial response saved in {log_dir / 'response.txt'}; it will not be executed."
+            "retrying; truncated code will not be executed."
         )
 
     code_block_match = re.search(r"```(?:python)?\s*(.*?)\s*```", analysis_strategy, re.DOTALL)
     generated_code = code_block_match.group(1).strip() if code_block_match else analysis_strategy.strip()
 
     # Syntax guard: do not execute code that does not compile.
-    (log_dir / "generated_analysis.py").write_text(generated_code + "\n", encoding="utf-8")
-    compile(generated_code, str(log_dir / "generated_analysis.py"), "exec")
+    compile(generated_code, str(GENERATED_SCRIPT), "exec")
     GENERATED_SCRIPT.parent.mkdir(parents=True, exist_ok=True)
     (output_dir / "figures").mkdir(parents=True, exist_ok=True)
     GENERATED_SCRIPT.write_text(generated_code + "\n", encoding="utf-8")
-    logger.info("Generated script saved: %s; exact code snapshot: %s", GENERATED_SCRIPT,
-                log_dir / "generated_analysis.py")
+    print(f"Generated script saved: {GENERATED_SCRIPT}", flush=True)
     print(analysis_strategy, flush=True)
 
-    returncode, seconds = execute_with_log(GENERATED_SCRIPT, log_dir / "analysis.log", logger)
+    environment = os.environ.copy()
+    environment["PYTHONIOENCODING"] = "utf-8"
+    environment["MPLBACKEND"] = "Agg"  # no display on the cluster
+    result = subprocess.run(
+        [sys.executable, "-u", str(GENERATED_SCRIPT)],
+        cwd=PROJECT_ROOT,
+        env=environment,
+    )
     expected_output = output_dir / OUTPUT_NAME
-    (log_dir / "execution.json").write_text(json.dumps({
-        "returncode": returncode, "seconds": seconds,
-        "script": str(GENERATED_SCRIPT), "input": file_path,
-        "expected_output": str(expected_output),
-        "output_exists": expected_output.is_file(),
-    }, indent=2), encoding="utf-8")
-    if returncode == 0:
-        logger.info("Analysis process finished. Expected output: %s", expected_output)
+    if result.returncode == 0:
+        print(f"Analysis process finished. Expected output: {expected_output}", flush=True)
     else:
-        logger.error("Execution failed with return code %s. Read %s", returncode, log_dir / "analysis.log")
-    return returncode
+        print(f"Execution failed with return code {result.returncode}", flush=True)
+    return result.returncode
 
 
 if __name__ == "__main__":
