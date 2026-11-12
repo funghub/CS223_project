@@ -38,7 +38,7 @@ mkdir -p output # this is where output and error go
 # automatically detects where Conda is installed without needing a hardcoded source path
 eval "$(conda shell.bash hook)"
 echo "Activating Conda Environment"
-conda activate cs223_class
+conda activate cs223_proj
 
 
 ###########################
