@@ -1,29 +1,14 @@
-#!/usr/bin/env python
-"""
-scRNA-seq pipeline (Scanpy): QC -> Scrublet -> normalization -> HVG -> scale/PCA ->
-Harmony -> neighbors/UMAP -> Leiden -> marker-based annotation -> figures -> save.
-
-Notes
-- No patient/platform columns exist in this dataset's obs (only 'barcode'), so the script
-  detects candidates defensively. If none are found, Scrublet runs on all cells together,
-  HVGs are chosen without batch_key, and Harmony is skipped (fallback to uncorrected PCA).
-- adata.raw holds ALL genes, log-normalized and unscaled. It is set after log1p and before
-  HVG subsetting, so the HVG-subset object is the one that gets scaled and passed to PCA.
-"""
-
 import os
 import gc
-import re
 import warnings
+
+import matplotlib
+matplotlib.use("Agg")
+import matplotlib.pyplot as plt
 
 import numpy as np
 import pandas as pd
 import scipy.sparse as sp
-
-import matplotlib
-matplotlib.use("Agg")  # non-interactive backend
-import matplotlib.pyplot as plt
-
 import scanpy as sc
 
 warnings.filterwarnings("ignore")
@@ -31,21 +16,21 @@ warnings.filterwarnings("ignore")
 # ----------------------------------------------------------------------------
 # Paths and settings
 # ----------------------------------------------------------------------------
-INPUT_PATH = "/scratch/home/lfung/CS223_class/CS223_project/data/broad1.h5ad"
-OUTPUT_DIR = "/scratch/home/lfung/CS223_class/CS223_project/output"
-FIG_DIR = "/scratch/home/lfung/CS223_class/CS223_project/output/figures"
+INPUT_PATH = "C:/Users/jimmy/Documents/GitHub/CS223_project/data/broad1.h5ad"
+OUTPUT_DIR = "C:/Users/jimmy/Documents/GitHub/CS223_project/output"
+FIG_DIR = "C:/Users/jimmy/Documents/GitHub/CS223_project/output/figures"
 OUTPUT_PATH = os.path.join(OUTPUT_DIR, "broad1_annotated_v2.h5ad")
-MARKERS_CSV = os.path.join(FIG_DIR, "cluster_markers.csv")
+MARKER_CSV = os.path.join(FIG_DIR, "cluster_markers.csv")
 
 os.makedirs(OUTPUT_DIR, exist_ok=True)
 os.makedirs(FIG_DIR, exist_ok=True)
 
-assert os.path.abspath(OUTPUT_PATH) != os.path.abspath(INPUT_PATH), "Refusing to overwrite input"
-
 sc.settings.figdir = FIG_DIR
-sc.settings.n_jobs = 4
 sc.settings.verbosity = 2
-sc.set_figure_params(dpi=100, dpi_save=150, frameon=False, figsize=(5, 5))
+sc.set_figure_params(dpi=80, frameon=False)
+
+PATIENT_COL = "sample_id"   # candidate patient column
+PLATFORM_COL = None         # no platform column found
 
 
 def log(msg):
@@ -53,111 +38,126 @@ def log(msg):
 
 
 # ----------------------------------------------------------------------------
-# Step 1: Load data
+# 1. Load data
 # ----------------------------------------------------------------------------
 log("[1] Reading input data...")
 adata = sc.read_h5ad(INPUT_PATH)
-adata.var_names_make_unique()
-adata.obs_names_make_unique()
+log(f"    Loaded: {adata.n_obs} cells x {adata.n_vars} genes")
 
-# Keep sparse CSR float32 (memory efficient)
+# Keep matrix as float32 CSR (raw counts)
 if not sp.issparse(adata.X):
     adata.X = sp.csr_matrix(adata.X)
 adata.X = adata.X.tocsr().astype(np.float32)
-log(f"    Loaded: {adata.n_obs} cells x {adata.n_vars} genes")
+adata.var_names_make_unique()
+
+if PATIENT_COL not in adata.obs.columns:
+    log("    WARNING: patient column missing; batch-aware steps will be skipped.")
+    PATIENT_COL = None
+else:
+    adata.obs[PATIENT_COL] = adata.obs[PATIENT_COL].astype(str).astype("category")
 
 # ----------------------------------------------------------------------------
-# Step 2: Detect patient / platform columns (defensive)
-# ----------------------------------------------------------------------------
-def find_col(obs, patterns, max_levels=500):
-    """Find a categorical-like obs column whose name matches one of the regex patterns."""
-    for col in obs.columns:
-        if any(re.search(p, col, flags=re.IGNORECASE) for p in patterns):
-            n = obs[col].nunique()
-            if 1 < n <= max_levels:
-                return col
-    return None
-
-
-patient_col = find_col(adata.obs, [r"patient", r"donor", r"subject", r"sample", r"individual"])
-platform_col = find_col(adata.obs, [r"platform", r"technology", r"chemistry", r"protocol", r"assay"])
-log(f"    Patient column: {patient_col} | Platform column: {platform_col}")
-
-# Batch key used for Scrublet / HVG (patient preferred)
-batch_key = patient_col
-for c in (patient_col, platform_col):
-    if c is not None:
-        adata.obs[c] = adata.obs[c].astype(str).astype("category")
-
-# ----------------------------------------------------------------------------
-# Step 3: QC metrics (mito, ribo, hemoglobin) with defensive prefix checks
+# 2. QC metrics
 # ----------------------------------------------------------------------------
 log("[2] Calculating QC metrics...")
-upper_names = adata.var_names.str.upper()
-adata.var["mt"] = upper_names.str.startswith("MT-")  # covers 'MT-' and 'mt-'
-adata.var["ribo"] = upper_names.str.startswith(("RPS", "RPL"))
-adata.var["hb"] = upper_names.str.match(r"^HB(?!P)[A-Z0-9]*$") & ~upper_names.str.startswith("HBEGF")
-log(f"    MT genes: {int(adata.var['mt'].sum())}, ribo genes: {int(adata.var['ribo'].sum())}, "
-    f"Hb genes: {int(adata.var['hb'].sum())}")
+# Preserve original metadata QC columns
+orig_qc = {}
+for c in ["n_genes_by_counts", "total_counts", "pct_counts_mt"]:
+    if c in adata.obs.columns:
+        orig_qc[c] = adata.obs[c].copy()
+        adata.obs[c + "_original"] = adata.obs[c].copy()
 
-sc.pp.calculate_qc_metrics(adata, qc_vars=["mt", "ribo", "hb"], percent_top=None,
-                           log1p=False, inplace=True)
+gnames = adata.var_names.str.upper()
+adata.var["mt"] = gnames.str.startswith("MT-")
+adata.var["ribo"] = gnames.str.startswith(("RPS", "RPL"))
+adata.var["hb"] = gnames.str.match(r"^HB[ABDEGMQZ]\d*$") & ~gnames.str.startswith("HBEGF")
+
+n_mt = int(adata.var["mt"].sum())
+n_ribo = int(adata.var["ribo"].sum())
+n_hb = int(adata.var["hb"].sum())
+log(f"    MT genes: {n_mt}, ribosomal: {n_ribo}, hemoglobin: {n_hb}")
+
+qc_vars = [v for v in ["mt", "ribo", "hb"] if adata.var[v].sum() > 0]
+has_mt = False
+if qc_vars:
+    tmp_metrics = sc.pp.calculate_qc_metrics(
+        adata, qc_vars=qc_vars, percent_top=None, log1p=False, inplace=False
+    )
+    # tmp_metrics is (obs_df, var_df)
+    obs_df = tmp_metrics[0]
+    for v in qc_vars:
+        col = f"pct_counts_{v}"
+        if v == "mt":
+            continue  # handled below
+        adata.obs[col] = obs_df[col].values
+    if n_mt > 0:
+        adata.obs["pct_counts_mt"] = obs_df["pct_counts_mt"].values
+        has_mt = True
+        log("    Using computed pct_counts_mt.")
+    del tmp_metrics, obs_df
+
+if not has_mt:
+    if "pct_counts_mt" in adata.obs.columns and adata.obs["pct_counts_mt"].notna().any():
+        has_mt = True
+        log("    No MT genes detected; using existing metadata pct_counts_mt.")
+    else:
+        log("    Mitochondrial QC unavailable; skipping MT filter.")
+
+for c in ["n_genes_by_counts", "total_counts"]:
+    if c not in adata.obs.columns:
+        adata.obs[c] = (
+            np.asarray((adata.X > 0).sum(1)).ravel() if c == "n_genes_by_counts"
+            else np.asarray(adata.X.sum(1)).ravel()
+        )
 
 # QC violin BEFORE filtering
-try:
-    sc.pl.violin(adata, ["n_genes_by_counts", "total_counts", "pct_counts_mt"],
-                 jitter=False, multi_panel=True, show=False, save="_qc_before_filtering.png")
-    plt.close("all")
-except Exception as e:
-    log(f"    WARNING: QC violin failed: {e}")
+log("    Saving pre-filter QC violin...")
+vkeys = ["n_genes_by_counts", "total_counts"] + (["pct_counts_mt"] if has_mt else [])
+sc.pl.violin(adata, vkeys, jitter=0.4, multi_panel=True, show=False,
+             save="_qc_before_filtering.png")
+plt.close("all")
 
 # ----------------------------------------------------------------------------
-# Step 4: Filtering
+# 3. Filtering
 # ----------------------------------------------------------------------------
 log("[3] Filtering cells and genes...")
+n0 = adata.n_obs
 sc.pp.filter_cells(adata, min_genes=200)
 sc.pp.filter_genes(adata, min_cells=3)
-keep = (adata.obs["pct_counts_mt"] < 10).values
-adata = adata[keep].copy()
+if has_mt:
+    keep = (adata.obs["pct_counts_mt"] < 10).values
+    adata = adata[keep].copy()
+log(f"    Cells: {n0} -> {adata.n_obs}; genes: {adata.n_vars}")
 gc.collect()
-log(f"    After filtering: {adata.n_obs} cells x {adata.n_vars} genes")
 
 # ----------------------------------------------------------------------------
-# Step 5: Doublet detection (Scrublet) on RAW counts, per sample if available
+# 4. Doublet removal (Scrublet on raw counts, per sample)
 # ----------------------------------------------------------------------------
-log("[4] Running Scrublet on raw counts...")
+log("[4] Running Scrublet per sample...")
 try:
-    if batch_key is not None:
-        sc.pp.scrublet(adata, batch_key=batch_key)
+    if PATIENT_COL is not None:
+        sc.pp.scrublet(adata, batch_key=PATIENT_COL)
     else:
-        log("    No patient column; running Scrublet on all cells together.")
         sc.pp.scrublet(adata)
+    log(f"    Predicted doublets: {int(adata.obs['predicted_doublet'].sum())}")
 
-    # Doublet score histogram
-    fig, ax = plt.subplots(figsize=(6, 4))
-    ax.hist(adata.obs["doublet_score"].values, bins=100, color="steelblue")
+    fig, ax = plt.subplots(figsize=(5, 4))
+    ax.hist(adata.obs["doublet_score"].values, bins=100)
     ax.set_xlabel("Scrublet doublet score")
-    ax.set_ylabel("Number of cells")
+    ax.set_ylabel("Cells")
     ax.set_yscale("log")
-    ax.set_title(f"Doublet scores (predicted doublets: {int(adata.obs['predicted_doublet'].sum())})")
     fig.tight_layout()
-    fig.savefig(os.path.join(FIG_DIR, "scrublet_doublet_score_hist.png"), dpi=150)
+    fig.savefig(os.path.join(FIG_DIR, "scrublet_doublet_score_hist.png"), dpi=100)
     plt.close(fig)
 
-    n_dbl = int(adata.obs["predicted_doublet"].sum())
     adata = adata[~adata.obs["predicted_doublet"].astype(bool).values].copy()
-    gc.collect()
-    log(f"    Removed {n_dbl} predicted doublets; {adata.n_obs} cells remain")
+    log(f"    Cells after doublet removal: {adata.n_obs}")
 except Exception as e:
     log(f"    WARNING: Scrublet failed ({e}); continuing without doublet removal.")
-    if "doublet_score" not in adata.obs:
-        adata.obs["doublet_score"] = np.float32(0.0)
-    if "predicted_doublet" not in adata.obs:
-        adata.obs["predicted_doublet"] = False
-    plt.close("all")
+gc.collect()
 
 # ----------------------------------------------------------------------------
-# Step 6: Normalization + log1p
+# 5. Normalization
 # ----------------------------------------------------------------------------
 log("[5] Normalizing (10,000) and log1p...")
 sc.pp.normalize_total(adata, target_sum=1e4)
@@ -165,91 +165,109 @@ sc.pp.log1p(adata)
 adata.X = adata.X.astype(np.float32)
 
 # ----------------------------------------------------------------------------
-# Step 7: HVG selection (seurat flavor on log data)
+# 6. HVG selection
 # ----------------------------------------------------------------------------
 log("[6] Selecting 2000 HVGs...")
 try:
-    sc.pp.highly_variable_genes(adata, n_top_genes=2000, flavor="seurat", batch_key=batch_key)
+    if PATIENT_COL is not None:
+        sc.pp.highly_variable_genes(adata, n_top_genes=2000, flavor="seurat",
+                                    batch_key=PATIENT_COL)
+    else:
+        sc.pp.highly_variable_genes(adata, n_top_genes=2000, flavor="seurat")
 except Exception as e:
-    log(f"    WARNING: HVG with batch_key failed ({e}); retrying without batch_key.")
+    log(f"    WARNING: batch-aware HVG failed ({e}); retrying without batch_key.")
     sc.pp.highly_variable_genes(adata, n_top_genes=2000, flavor="seurat")
 
-try:
-    sc.pl.highly_variable_genes(adata, show=False, save="_hvg.png")
-    plt.close("all")
-except Exception as e:
-    log(f"    WARNING: HVG plot failed: {e}")
+sc.pl.highly_variable_genes(adata, show=False, save="_hvg.png")
+plt.close("all")
 
-# ----------------------------------------------------------------------------
-# Step 8: Attach all-gene log-normalized (unscaled) data as raw, then subset to HVGs
-# ----------------------------------------------------------------------------
-log("[7] Setting adata.raw (all genes, log-normalized) and subsetting to HVGs...")
-adata.raw = adata  # all genes, log-normalized, unscaled
-hvg_mask = adata.var["highly_variable"].values
-adata = adata[:, hvg_mask].copy()  # old full object released after reassignment
+# Preserve all-gene log-normalized expression (exact order required)
+all_genes = adata
+adata = all_genes[:, all_genes.var["highly_variable"]].copy()
+adata.raw = all_genes
+del all_genes
 gc.collect()
-log(f"    HVG object: {adata.n_obs} cells x {adata.n_vars} genes")
+log(f"    HVG object: {adata.n_obs} x {adata.n_vars}")
 
 # ----------------------------------------------------------------------------
-# Step 9: Scale (on HVG subset) and PCA
+# 7. Scale + PCA
 # ----------------------------------------------------------------------------
-log("[8] Scaling (clip 10) and PCA (50 comps)...")
+log("[7] Scaling and PCA...")
 sc.pp.scale(adata, max_value=10)
-adata.X = adata.X.astype(np.float32)
-sc.tl.pca(adata, n_comps=50, svd_solver="arpack")
-try:
-    sc.pl.pca_variance_ratio(adata, n_pcs=50, log=True, show=False, save="_pca_variance_ratio.png")
-    plt.close("all")
-except Exception as e:
-    log(f"    WARNING: PCA variance plot failed: {e}")
+if sp.issparse(adata.X):
+    adata.X = adata.X.toarray()
+adata.X = np.asarray(adata.X, dtype=np.float32)  # cast back to float32
 gc.collect()
 
-# ----------------------------------------------------------------------------
-# Step 10: Harmony integration (fallback to uncorrected PCA)
-# ----------------------------------------------------------------------------
-log("[9] Batch correction with Harmony...")
-use_rep = "X_pca"
-harmony_key = None
-if patient_col is not None and platform_col is not None:
-    adata.obs["harmony_batch"] = (adata.obs[patient_col].astype(str) + "_" +
-                                  adata.obs[platform_col].astype(str)).astype("category")
-    harmony_key = "harmony_batch"
-elif patient_col is not None:
-    harmony_key = patient_col
-elif platform_col is not None:
-    harmony_key = platform_col
+sc.tl.pca(adata, n_comps=50, svd_solver="arpack" if False else "randomized")
+adata.obsm["X_pca"] = adata.obsm["X_pca"].astype(np.float32)
+sc.pl.pca_variance_ratio(adata, n_pcs=50, log=True, show=False, save="_pca_variance_ratio.png")
+plt.close("all")
 
-if harmony_key is None:
-    log("    WARNING: no patient/platform column available; skipping Harmony, using uncorrected PCA.")
+# ----------------------------------------------------------------------------
+# 8. Harmony integration, neighbors, UMAP
+# ----------------------------------------------------------------------------
+log("[8] Batch correction and embedding...")
+if PATIENT_COL is not None and PLATFORM_COL is not None:
+    adata.obs["batch_key_combined"] = (
+        adata.obs[PATIENT_COL].astype(str) + "_" + adata.obs[PLATFORM_COL].astype(str)
+    ).astype("category")
+    batch_key = "batch_key_combined"
+elif PATIENT_COL is not None:
+    batch_key = PATIENT_COL
 else:
-    try:
-        import scanpy.external as sce
-        sce.pp.harmony_integrate(adata, key=harmony_key, basis="X_pca",
-                                 adjusted_basis="X_pca_harmony")
-        use_rep = "X_pca_harmony"
-        log("    Harmony complete -> obsm['X_pca_harmony']")
-    except Exception as e:
-        log(f"    WARNING: Harmony failed or harmonypy missing ({e}); falling back to uncorrected PCA.")
-        use_rep = "X_pca"
+    batch_key = None
 
-# ----------------------------------------------------------------------------
-# Step 11: Neighbors, UMAP, Leiden
-# (a pre-Harmony UMAP is skipped: a second UMAP on this many cells is very costly)
-# ----------------------------------------------------------------------------
-log(f"[10] Neighbors (30 PCs, k=15) and UMAP from {use_rep}...")
+color_cols = [c for c in [PATIENT_COL, PLATFORM_COL] if c is not None]
+
+# UMAP before Harmony (uncorrected PCA)
+try:
+    log("    Computing pre-Harmony UMAP...")
+    sc.pp.neighbors(adata, n_neighbors=15, n_pcs=30, use_rep="X_pca", key_added="neighbors_uncorrected")
+    sc.tl.umap(adata, neighbors_key="neighbors_uncorrected")
+    if color_cols:
+        sc.pl.umap(adata, color=color_cols, show=False, save="_before_harmony.png")
+        plt.close("all")
+    # Remove temporary uncorrected graph to save memory
+    for k in ["neighbors_uncorrected_distances", "neighbors_uncorrected_connectivities"]:
+        if k in adata.obsp:
+            del adata.obsp[k]
+    adata.uns.pop("neighbors_uncorrected", None)
+    adata.obsm.pop("X_umap", None)
+except Exception as e:
+    log(f"    WARNING: pre-Harmony UMAP failed ({e}).")
+gc.collect()
+
+use_rep = "X_pca"
+if batch_key is not None:
+    try:
+        import harmonypy  # noqa: F401
+        import scanpy.external as sce
+        sce.pp.harmony_integrate(adata, key=batch_key, basis="X_pca",
+                                 adjusted_basis="X_pca_harmony")
+        adata.obsm["X_pca_harmony"] = np.asarray(adata.obsm["X_pca_harmony"], dtype=np.float32)
+        use_rep = "X_pca_harmony"
+        log("    Harmony integration complete.")
+    except Exception as e:
+        log(f"    WARNING: Harmony unavailable/failed ({e}); using uncorrected PCA.")
+else:
+    log("    No batch key; skipping Harmony.")
+
 sc.pp.neighbors(adata, n_neighbors=15, n_pcs=30, use_rep=use_rep)
 sc.tl.umap(adata)
 
-log("[11] Leiden clustering (res 0.5)...")
+# ----------------------------------------------------------------------------
+# 9. Leiden clustering
+# ----------------------------------------------------------------------------
+log("[9] Leiden clustering...")
 sc.tl.leiden(adata, resolution=0.5, flavor="igraph", n_iterations=2,
              directed=False, key_added="leiden")
-log(f"    Found {adata.obs['leiden'].nunique()} clusters")
-gc.collect()
+log(f"    Clusters: {adata.obs['leiden'].nunique()}")
 
 # ----------------------------------------------------------------------------
-# Step 12: Marker-based annotation
+# 10. Marker-based annotation
 # ----------------------------------------------------------------------------
-log("[12] Scoring marker sets...")
+log("[10] Cell type annotation...")
 marker_sets = {
     "Malignant epithelial": ["EPCAM", "KRT8", "KRT18", "KRT19", "KRT7"],
     "CAFs": ["COL1A1", "COL1A2", "DCN", "LUM", "FAP", "PDGFRB"],
@@ -258,127 +276,126 @@ marker_sets = {
     "TAMs": ["CD68", "CD163", "CSF1R", "MRC1", "C1QA", "APOE"],
     "Dendritic cells": ["CD1C", "CLEC9A", "FCER1A", "LILRA4", "CLEC10A", "IRF8"],
 }
-raw_genes = set(adata.raw.var_names)
-present_markers = {}
+raw_names = set(adata.raw.var_names)
+present = {ct: [g for g in gl if g in raw_names] for ct, gl in marker_sets.items()}
+
 score_cols = {}
-for ct, genes in marker_sets.items():
-    found = [g for g in genes if g in raw_genes]
-    missing = [g for g in genes if g not in raw_genes]
-    if missing:
-        log(f"    {ct}: missing markers {missing}")
-    if found:
-        present_markers[ct] = found
-        col = "score_" + re.sub(r"[^A-Za-z0-9]+", "_", ct)
-        sc.tl.score_genes(adata, found, score_name=col, use_raw=True)
+for ct, genes in present.items():
+    log(f"    {ct}: {len(genes)}/{len(marker_sets[ct])} markers present")
+    if genes:
+        col = "score_" + ct.replace(" ", "_").replace("+", "pos")
+        sc.tl.score_genes(adata, gene_list=genes, score_name=col, use_raw=True)
         score_cols[ct] = col
 
-# Individual Treg-defining scores (FOXP3, IL2RA) to compare against CD8+ T score
-extra_cols = {}
-for g in ["FOXP3", "IL2RA"]:
-    if g in raw_genes:
-        col = f"score_gene_{g}"
-        sc.tl.score_genes(adata, [g], score_name=col, use_raw=True)
-        extra_cols[g] = col
+# Per-gene marker expression for Treg rule (FOXP3 / IL2RA)
+def raw_gene_vec(g):
+    if g not in raw_names:
+        return None
+    x = adata.raw[:, g].X
+    x = x.toarray().ravel() if sp.issparse(x) else np.asarray(x).ravel()
+    return x
 
-log("[13] Assigning cell types to clusters...")
-MIN_SCORE = 0.05      # below this best score -> Unassigned
-TREG_MARGIN = 0.10    # FOXP3/IL2RA score must exceed CD8 score by this margin
+foxp3 = raw_gene_vec("FOXP3")
+il2ra = raw_gene_vec("IL2RA")
 
-cluster_scores = adata.obs.groupby("leiden", observed=True)[list(score_cols.values())].mean()
-cluster_scores.columns = list(score_cols.keys())
-extra_scores = (adata.obs.groupby("leiden", observed=True)[list(extra_cols.values())].mean()
-                if extra_cols else pd.DataFrame(index=cluster_scores.index))
+MIN_SCORE = 0.05       # below this best score -> Unassigned
+TREG_MARGIN = 0.1      # Treg must clearly exceed CD8 score
 
-cluster_labels = {}
-for cl in cluster_scores.index:
-    if cluster_scores.shape[1] == 0:
-        cluster_labels[cl] = "Unassigned"
-        continue
-    scores = cluster_scores.loc[cl].copy()
-    best = scores.idxmax()
-    if scores[best] < MIN_SCORE:
-        cluster_labels[cl] = "Unassigned"
-        continue
-    # Resolve Treg vs CD8+ T overlap
-    if best in ("Tregs", "CD8+ T cells") and "Tregs" in scores and "CD8+ T cells" in scores:
-        cd8 = scores["CD8+ T cells"]
-        treg_gene_scores = [extra_scores.loc[cl, c] for c in extra_scores.columns] if extra_scores.shape[1] else []
-        treg_clear = bool(treg_gene_scores) and (max(treg_gene_scores) > cd8 + TREG_MARGIN)
-        if treg_clear and scores["Tregs"] >= MIN_SCORE:
-            best = "Tregs"
-        else:
-            # Tregs not clearly supported: choose CD8 if it is valid, else next best non-Treg
-            non_treg = scores.drop("Tregs")
-            best = non_treg.idxmax()
-            if non_treg[best] < MIN_SCORE:
-                cluster_labels[cl] = "Unassigned"
-                continue
-    cluster_labels[cl] = best
+cluster_to_type = {}
+if score_cols:
+    clusters = adata.obs["leiden"].astype(str).values
+    mean_scores = pd.DataFrame(
+        {ct: adata.obs[col].groupby(adata.obs["leiden"].values).mean()
+         for ct, col in score_cols.items()}
+    )
+    log("    Mean scores per cluster:\n" + mean_scores.round(3).to_string())
 
-adata.obs["cell_type"] = adata.obs["leiden"].map(cluster_labels).astype(str).astype("category")
-log("    Cluster -> cell type:")
-for cl, ct in cluster_labels.items():
-    log(f"      {cl}: {ct}")
-log(f"    Cell type counts:\n{adata.obs['cell_type'].value_counts().to_string()}")
+    for cl in mean_scores.index:
+        row = mean_scores.loc[cl]
+        best = row.idxmax()
+        if row[best] < MIN_SCORE:
+            cluster_to_type[cl] = "Unassigned"
+            continue
+        if best == "Tregs" and "CD8+ T cells" in row.index:
+            # Require FOXP3 or IL2RA to clearly exceed CD8+ T score
+            mask = clusters == str(cl)
+            ok = False
+            cd8 = row["CD8+ T cells"]
+            for vec in (foxp3, il2ra):
+                if vec is not None and vec[mask].mean() > cd8 + TREG_MARGIN * 0 and \
+                        (vec[mask].mean() - cd8) > TREG_MARGIN:
+                    ok = True
+            if not ok:
+                rest = row.drop("Tregs")
+                best = rest.idxmax()
+                if rest[best] < MIN_SCORE:
+                    best = "Unassigned"
+        cluster_to_type[cl] = best
+else:
+    log("    No markers present; all cells Unassigned.")
 
-# ----------------------------------------------------------------------------
-# Step 13: Differential expression per cluster (Wilcoxon on raw) -> top 10 CSV
-# ----------------------------------------------------------------------------
-log("[14] Ranking genes per Leiden cluster (Wilcoxon, raw)...")
+adata.obs["cell_type"] = (
+    adata.obs["leiden"].astype(str).map(cluster_to_type).fillna("Unassigned").astype("category")
+)
+log("    Cell type counts:\n" + adata.obs["cell_type"].value_counts().to_string())
+
+# Cluster marker genes (Wilcoxon on raw)
+log("    Ranking genes per cluster (Wilcoxon)...")
 try:
-    sc.tl.rank_genes_groups(adata, groupby="leiden", method="wilcoxon", use_raw=True,
-                            key_added="rank_genes_groups")
-    tables = []
-    for g in adata.obs["leiden"].cat.categories:
-        df = sc.get.rank_genes_groups_df(adata, group=g, key="rank_genes_groups").head(10)
-        df.insert(0, "cluster", g)
-        df.insert(1, "cell_type", cluster_labels.get(g, "Unassigned"))
-        df.insert(2, "rank", np.arange(1, len(df) + 1))
-        tables.append(df)
-    pd.concat(tables, ignore_index=True).to_csv(MARKERS_CSV, index=False)
-    log(f"    Saved top-10 markers to {MARKERS_CSV}")
+    sc.tl.rank_genes_groups(adata, groupby="leiden", method="wilcoxon",
+                            use_raw=True, n_genes=50)
+    res = adata.uns["rank_genes_groups"]
+    rows = []
+    for cl in res["names"].dtype.names:
+        for rank in range(10):
+            rows.append({
+                "cluster": cl,
+                "rank": rank + 1,
+                "gene": res["names"][cl][rank],
+                "score": res["scores"][cl][rank],
+                "logfoldchange": res["logfoldchanges"][cl][rank],
+                "pval_adj": res["pvals_adj"][cl][rank],
+            })
+    pd.DataFrame(rows).to_csv(MARKER_CSV, index=False)
+    log(f"    Saved markers to {MARKER_CSV}")
 except Exception as e:
-    log(f"    WARNING: rank_genes_groups failed: {e}")
+    log(f"    WARNING: rank_genes_groups failed ({e}).")
 
 # ----------------------------------------------------------------------------
-# Step 14: Figures
+# 11. Figures
 # ----------------------------------------------------------------------------
-log("[15] Saving figures...")
-umap_keys = ["leiden", "cell_type"]
-for c in (patient_col, platform_col):
-    if c is not None and c not in umap_keys:
-        umap_keys.append(c)
-
-for k in umap_keys:
+log("[11] Saving figures...")
+umap_colors = ["leiden", "cell_type"] + color_cols
+sc.pl.umap(adata, color=umap_colors, show=False, save="_after_harmony.png")
+plt.close("all")
+for c in umap_colors:
     try:
-        sc.pl.umap(adata, color=k, show=False, save=f"_{k}_after_integration.png",
-                   legend_loc="on data" if k == "leiden" else "right margin")
+        sc.pl.umap(adata, color=c, show=False, save=f"_{c}.png")
         plt.close("all")
     except Exception as e:
-        log(f"    WARNING: UMAP plot for {k} failed: {e}")
+        log(f"    WARNING: UMAP for {c} failed ({e})")
 
-try:
-    dot_markers = {ct: g for ct, g in present_markers.items()}
-    sc.pl.dotplot(adata, var_names=dot_markers, groupby="cell_type", use_raw=True,
-                  standard_scale="var", show=False, save="_markers_by_cell_type.png")
-    plt.close("all")
-except Exception as e:
-    log(f"    WARNING: dotplot failed: {e}")
+all_markers = [g for gl in present.values() for g in gl]
+all_markers = list(dict.fromkeys(all_markers))
+if all_markers:
+    try:
+        sc.pl.dotplot(adata, var_names=all_markers, groupby="cell_type", use_raw=True,
+                      show=False, save="_markers_by_cell_type.png")
+        plt.close("all")
+    except Exception as e:
+        log(f"    WARNING: dotplot failed ({e})")
 
 # ----------------------------------------------------------------------------
-# Step 15: Save final AnnData
+# 12. Save final object
 # ----------------------------------------------------------------------------
-log("[16] Saving final AnnData...")
-# Ensure obs columns are written safely
-for c in adata.obs.columns:
-    if adata.obs[c].dtype == object:
-        adata.obs[c] = adata.obs[c].astype(str)
-if "predicted_doublet" in adata.obs:
-    adata.obs["predicted_doublet"] = adata.obs["predicted_doublet"].astype(bool)
+log("[12] Preparing and saving final AnnData...")
+# Replace dense scaled X with sparse log-normalized HVG matrix from raw
+adata.X = adata.raw[:, adata.var_names].X.tocsr().astype(np.float32)
 
-adata.write_h5ad(OUTPUT_PATH)
-log(f"    Saved to {OUTPUT_PATH}")
+for k in ["distances", "connectivities"]:
+    if k in adata.obsp:
+        adata.obsp[k] = adata.obsp[k].astype(np.float32)
 
-del adata
 gc.collect()
-log("Pipeline finished.")
+adata.write_h5ad(OUTPUT_PATH, compression="gzip")
+log(f"Done. Saved to {OUTPUT_PATH}")

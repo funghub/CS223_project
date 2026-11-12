@@ -81,8 +81,11 @@ def analyze_scrna_with_claude(file_path: str, output_file_path: str):
     Requirements:
     1. Input: Read the dataset from "{file_path}".
     2. Quality control and filtering:
-       - Calculate QC metrics (mitochondrial, ribosomal, hemoglobin) with defensive checks for 'MT-' / 'mt-' prefixes.
-       - Filter cells with min_genes=200, genes with min_cells=3, and cells with pct_counts_mt < 10.
+        - Preserve the original QC metrics supplied in cell metadata.
+        - Calculate mitochondrial, ribosomal, and hemoglobin QC metrics when the relevant genes are present.
+        - If no mitochondrial genes are detected, use the existing metadata column pct_counts_mt. Do not overwrite it with zeros.
+        - If neither mitochondrial genes nor existing mitochondrial percentages are available, report that mitochondrial QC is unavailable and skip that filter.
+   - Filter cells with min_genes=200, genes with min_cells=3, and cells with pct_counts_mt < 10 when a valid mitochondrial percentage is available.
     3. Doublet removal (Scrublet):
        - Run on RAW COUNTS before normalization, per sample/patient (use sc.pp.scrublet with batch_key,
          or scrublet directly per batch). Choose the sample/patient column from the candidates above.
@@ -126,12 +129,17 @@ def analyze_scrna_with_claude(file_path: str, output_file_path: str):
     instead of the dense scaled matrix, and cast obsp["distances"] and obsp["connectivities"] to float32.
 
     Computer limit:
-    32 GB RAM. Use in-memory Scanpy while minimizing peak memory including temporary copies.
-    Keep the sparse format and use float32. Do not duplicate the full counts matrix in a layer.
-    Subset to HVGs before attaching all-gene log-normalized expression as adata.raw (set raw before scaling),
-    so downstream differential expression can use unscaled data. Free objects with del and gc.collect().
+     32 GB RAM. Use standard in-memory Scanpy while minimizing peak memory, including temporary copies.
+    Keep expression matrices in float32. Scaling may promote the matrix to float64, so explicitly cast adata.X back to float32 after scaling and before PCA. Setting PCA's output dtype alone is insufficient.
+    Preserve all-gene log-normalized expression using this exact order:
+    all_genes = adata
+    adata = all_genes[:, all_genes.var["highly_variable"]].copy()
+    adata.raw = all_genes
+    del all_genes
+    Do not assign adata.raw before the HVG subset copy.
+    Avoid duplicating the full expression matrix, and release unused objects before memory-intensive steps.
 
-    Output rules:
+    
     - Clear comments for each step and print progress messages (flush=True).
     - Output ONLY the complete, self-contained Python script wrapped in ```python ... ``` without omitting any steps.
     """
