@@ -42,7 +42,7 @@ conda activate cs223_class
 
 
 ###########################
-cd "/scratch/home/lfung/CS223_class/CS223_project/output/broad"
+cd "/scratch/home/lfung/CS223_class/CS223_project/output"
 echo "$(pwd)"
 
 gzip -vk broad1.h5ad
